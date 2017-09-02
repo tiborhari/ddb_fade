@@ -104,41 +104,54 @@ sleep_millis (int milliseconds) {
 }
 
 static int ddb_fade_message (uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
+    int STOP = 0;
+    int START = 1;
+    int SEEK = 2;
+    int status = START;  // 0: stop, 1: start, 2: seek stop, 3: seek start
     DB_output_t *output = deadbeef->get_output();
 
     switch (id) {
         case DB_EV_SEEK:
-            starting = 0;
-            current_interval = seek_interval;
+            // Seek started, fade-out
+            status = STOP | SEEK;
+            break;
+        case DB_EV_SEEKED:
+            // Seek finished, fade-in
+            status = START | SEEK;
+            break;
+        case DB_EV_PAUSED:
+            if (p1) status = STOP;
+            else status = START;
+            break;
+        case DB_EV_TOGGLE_PAUSE:
+            if (output->state() == OUTPUT_STATE_PLAYING) status = STOP;
+            else status = START;
             break;
         case DB_EV_STOP:
         case DB_EV_PAUSE:
-        case DB_EV_PAUSED:
-        case DB_EV_TOGGLE_PAUSE:
         case DB_EV_PLAY_CURRENT:
         case DB_EV_PLAY_NUM:
         case DB_EV_PLAY_RANDOM:
         case DB_EV_NEXT:
         case DB_EV_PREV:
-            if ((id != DB_EV_PAUSED || p1) && (id != DB_EV_TOGGLE_PAUSE || output->state() == OUTPUT_STATE_PLAYING)) {
-                starting = 0;
-                current_interval = stop_interval;
-                break;
-            }
-            // else fall over
-        case DB_EV_SONGSTARTED: // or unpaused
-            starting = 1;
-            current_interval = start_interval;
+            status = STOP;
             break;
-        case DB_EV_SEEKED:
-            starting = 1;
-            current_interval = seek_interval;
+        case DB_EV_SONGSTARTED:
+            status = START;
             break;
         default:
             break;
     }
 
-    if (!starting) {
+    if (status & SEEK) current_interval = seek_interval;
+    else if (status & START) current_interval = start_interval;
+    else current_interval = stop_interval;
+    if (status & START) {
+        starting = 1;
+    }
+    else {
+        starting = 0;
+        // Wait until the audio is faded out
         if (fade_ratio > 0.0) {
             sleep_millis(current_interval*fade_ratio + processing_buffer_interval*2);
         }
