@@ -10,11 +10,15 @@
 DB_functions_t *deadbeef;
 static DB_dsp_t plugin;
 
+// Constants
+#define STOP 0
+#define START 1
+#define SEEK 2
+
 // Global variables
-int starting = 0;
-float fade_ratio = 0.0;
-int current_interval = 500;
+int status = START;  // 0: stop, 1: start, 2: seek stop, 3: seek start
 int processing_buffer_interval = 0;
+float fade_ratio = 0.0;
 
 // Global settings
 int start_interval = 500;
@@ -65,21 +69,31 @@ ddb_fade_get_value (float ratio) {
 }
 
 int
+ddb_get_interval(int status) {
+    if (status & SEEK) return seek_interval;
+    else if (status & START) return start_interval;
+    else return stop_interval;
+}
+
+int
 ddb_fade_process (ddb_dsp_context_t *ctx, float *samples, int frames, int maxframes, ddb_waveformat_t *fmt, float *ratio) {
     float interval_frames;
-    int new_buffer_interval;
+    int current_status = status;  // Make a copy to prevent race conditions
+    int interval = ddb_get_interval(current_status);
+    // The duration (in ms) of the received buffer
+    int new_buffer_interval = (float)frames / (float)fmt->samplerate * 1000.0;
 
-    new_buffer_interval = (float)frames / (float)fmt->samplerate * 1000.0;
     if (new_buffer_interval > processing_buffer_interval) {
         processing_buffer_interval = new_buffer_interval;
     }
 
-    interval_frames = (int)((float)current_interval * (float)fmt->samplerate / 1000.0);
+    interval_frames = (int)((float)interval * (float)fmt->samplerate / 1000.0);
     for (int i = 0; i < frames; ++i) {
         for (int s = 0; s < fmt->channels; ++s) {
             samples[i*fmt->channels + s] *= ddb_fade_get_value(fade_ratio);
         }
-        if (starting) fade_ratio += 1.0 / interval_frames;
+
+        if (current_status & START) fade_ratio += 1.0 / interval_frames;
         else fade_ratio -= 1.0 / interval_frames;
         if (1.0 < fade_ratio) fade_ratio = 1.0;
         if (fade_ratio < 0.0) fade_ratio = 0.0;
@@ -104,10 +118,6 @@ sleep_millis (int milliseconds) {
 }
 
 static int ddb_fade_message (uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
-    int STOP = 0;
-    int START = 1;
-    int SEEK = 2;
-    int status = START;  // 0: stop, 1: start, 2: seek stop, 3: seek start
     DB_output_t *output = deadbeef->get_output();
 
     switch (id) {
@@ -143,20 +153,12 @@ static int ddb_fade_message (uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p
             break;
     }
 
-    if (status & SEEK) current_interval = seek_interval;
-    else if (status & START) current_interval = start_interval;
-    else current_interval = stop_interval;
-    if (status & START) {
-        starting = 1;
-    }
-    else {
-        starting = 0;
+    if (!(status & START)) {
         // Wait until the audio is faded out
         if (fade_ratio > 0.0) {
-            sleep_millis(current_interval*fade_ratio + processing_buffer_interval*2);
+            sleep_millis(ddb_get_interval(status)*fade_ratio + processing_buffer_interval*2);
         }
         fade_ratio = 0.0;
-        starting = 1;
     }
 
     return 0;
